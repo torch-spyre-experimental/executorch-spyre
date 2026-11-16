@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "executorch-spyre"
+version = "0.3.0rc1"
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+description = "ExecuTorch backend delegate for the IBM Spyre accelerator"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.12"
+dependencies = [
+    "torch==2.13.0",
+    "executorch==1.5.1",
+]
+
+[project.optional-dependencies]
+# Supported torch-spyre: v0.5.0-rc.3 (compatibility-manifest.json,
+# docs/version-matrix.md, third_party/torch-spyre submodule). There is no
+# installable torch-spyre package yet (#28), so the submodule pin is
+# authoritative and this is only a lower bound.
+spyre = [
+    "torch-spyre>=0.5.0rc3",
+]
+
+[project.urls]
+Repository = "https://github.com/torch-spyre-experimental/executorch-spyre"
+
+[project.scripts]
+executorch-spyre-export = "executorch.backends.spyre.export:main"
+
+# Lint configuration. Pinned tools: black 24.10.0, ruff 0.8.6 (.pre-commit-config.yaml).
+# spyre2 is out of scope and hands-off, so both tools skip it. ``force-exclude`` also
+# applies to files passed explicitly on the command line, which is how pre-commit
+# invokes them. The top-level ``exclude:`` in .pre-commit-config.yaml (CI-08) stays as
+# a second layer.
+[tool.black]
+target-version = ["py312"]
+line-length = 88
+force-exclude = "/(executorch/backends/spyre2|examples/spyre2_mm)/"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["."]
+extend-exclude = ["executorch/backends/spyre2", "examples/spyre2_mm"]
+force-exclude = true
+
+[tool.ruff.lint]
+# The ruff 0.8.6 default rule set, written out so it does not depend on the tool version.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "host: tests that require no torch-spyre installation or Spyre device",
+    "spyre: tests that require torch-spyre and a physical Spyre device",
+    "spyre_frontend: tests that require torch-spyre but no Spyre device (frontend-only compile)",
+]
+
+# Only the packages this repo owns. ``executorch`` and ``executorch.backends``
+# belong to the ExecuTorch wheel (``executorch.backends`` is a regular package
+# there), so they must not be claimed here: listing the leaf packages makes the
+# editable-install finder map ``executorch.backends.spyre`` itself, and a regular
+# install drops it inside the wheel's ``executorch/backends/``.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["executorch.backends.spyre*", "executorch.backends.spyre2*"]
+
+[tool.setuptools.package-data]
+"executorch.backends.spyre.coverage" = ["*.yaml"]
+"executorch.backends.spyre2.fixtures.ktir" = ["*.mlir"]
+"executorch.backends.spyre2.fixtures.ttir" = ["*.ttir"]

@@ -1,0 +1,201 @@
+# Spyre delegate — op allowlist (source of truth for the partitioner).
+#
+# Used by the partitioner in both partition modes
+# (see docs/operator-guide.md#partition-modes):
+#   allowlist     (conservative / CI)  delegates ONLY entries with `validated: true`.
+#   fallbacklist  (production default) delegates everything torch-spyre does not
+#                 list as a CPU fallback EXCEPT entries with `validated: false`,
+#                 which stay on CPU in both modes.
+# An op is marked validated exactly when an on-device compile+run through the coverage
+# harness (coverage/run_coverage.py) confirmed SDSC lowers it AND the result
+# matched the CPU fp16 reference. Everything else is the queue: candidate ops
+# seeded from torch-spyre's known-good lowerings, delegated only once proven.
+#
+# This is the "fail loudly, never miscompile" contract — claim an op only after
+# the device says yes. Schema is parsed by coverage/ops_registry.py; keep it to
+# the constrained form (a top-level `ops:` list of flat `- name:/validated:/...`
+# mappings) so the zero-dependency host-CI parser (_yaml_compat) accepts it.
+#
+# Fields per entry:
+#   name        core-aten op.name() (e.g. "aten::mm") — REQUIRED, must contain "::"
+#   validated   confirmed on a Spyre device end-to-end?  (default false)
+#   since_phase phase that validated/introduced the entry (informational)
+#   note        short human note
+#
+# Phase 8 (8a) device sweep @ 2026-07-27: 38 probes, 30 compile, 26 run,
+# 24 match on-device. 19 ops promoted here from the compiling set; the rest are
+# annotated with their device-observed failure (queue for 8b / follow-up).
+
+ops:
+  # --- matmul family ---
+  - name: "aten::mm"
+    validated: true
+    since_phase: 2
+    note: "64x64 fp16 matmul, on-device 0/4096 outside envelope"
+  - name: "aten::addmm"
+    validated: true
+    since_phase: 3
+    note: "MLP Linear bias-add + matmul"
+  - name: "aten::bmm"
+    validated: true
+    since_phase: 8
+    note: "8a follow-up: runs+matches on device (max_abs_err 0.094, envelope ok). Prior runs=FAIL was a delegate bug, NOT SDSC: the single bmm kernel allocates a workspace tensor the v1 layout mislabeled as a 2nd output; fixed by routing single-kernel-with-intermediate through the v2 payload. Backs 8c attention scores/context."
+  - name: "aten::matmul"
+    validated: true
+    since_phase: 8
+    note: "8a follow-up: runs+matches on device via the same single-kernel-with-workspace v1->v2 fix as bmm (3D probe). NOTE: 4D matmul still compile-blocked upstream (insert_bmm_padding 'Incompatible host_size and dim_order') — see reports/upstream-issues/phase8-matmul-4d.md."
+  - name: "aten::_scaled_mm"
+    validated: false
+
+  # --- elementwise (residual adds, gating, RoPE, scaling) ---
+  - name: "aten::add"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::sub"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::mul"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::clamp"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::clamp_min"
+    validated: false
+  - name: "aten::clamp_max"
+    validated: false
+  - name: "aten::maximum"
+    validated: false
+  - name: "aten::minimum"
+    validated: false
+
+  # --- pointwise (RMSNorm math, RoPE) ---
+  - name: "aten::div"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::neg"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::pow"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::rsqrt"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+
+  # --- activation ---
+  - name: "aten::relu"
+    validated: true
+    since_phase: 3
+    note: "MLP activation"
+  - name: "aten::silu"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope (gated MLP)"
+  - name: "aten::gelu"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::sigmoid"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+
+  # --- reductions / fills ---
+  - name: "aten::mean"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope (RMSNorm variance)"
+  - name: "aten::full"
+    validated: false
+    note: "8a sweep: compiles=FAIL (probe 'Boolean value of Tensor ambiguous'); earlier probe was multi-kernel. Queue."
+
+  # --- norm ---
+  - name: "aten::rms_norm"
+    validated: false
+    note: "8a follow-up (LD_LIBRARY_PATH-fixed re-probe): compiles(1 kernel), runs=PASS, matches=FAIL — fused rms_norm executes on-device but is numerically outside the fp16 envelope. NOT on the critical path: Granite uses RMSNorm-as-math (mul/pow/mean/add/rsqrt, all validated), which fully delegates (see test_rmsnorm_math_fully_delegated). Left off allowlist; upstream numeric bug is an 8b issue-draft candidate."
+  - name: "aten::native_layer_norm"
+    validated: false
+    note: "compile FAIL: InductorError KeyError 'No FX node for buf11'. No work — Granite uses RMSNorm (8b)."
+
+  # --- shape / layout (view-like, copy variants in edge dialect) ---
+  - name: "aten::permute_copy"
+    validated: true
+    since_phase: 3
+    note: "MLP Linear weight transpose"
+  - name: "aten::view_copy"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::expand_copy"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope (GQA broadcast)"
+  - name: "aten::transpose_copy"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::unsqueeze_copy"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::_reshape_alias_copy"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::slice_copy"
+    validated: false
+    note: "8c: pure data-movement, lowers to ZERO SDSC compute kernels so the coverage harness cannot probe it standalone ('preprocess: no SDSC kernel was emitted'). NOT device-validated -- kept off the allowlist per the no-flip-without-green-run contract. The 8c attention path was rewritten to per-head Linear(E,D) projections precisely to eliminate the head slice_copy: a single Linear(E,H*D) interleaves heads on the innermost dim, so slicing head h off the [1,S,H,D] view yields a gappy H*D-strided [S,D] that trips the SDSC inductor coordinate normalizer ('Unsupported coordinate expression 65*c1/64'). Per-head projection makes each head dense contiguous, so there is no slice_copy on the device path at all."
+  - name: "aten::select_copy"
+    validated: false
+    note: "compile FAIL: stick incompatibility (gather across sticks). Rewrite to slice_copy in layer authoring (8b)."
+  - name: "aten::clone"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::cat"
+    validated: false
+    note: "8a follow-up (dim-resolved re-probe): device cat is CORRECT along leading/sequence dims (dim=0: max_abs_err 0.002, 0/128 outside; dim=1 of 3D [B,S,D], the KV-cache case: 0.002, 0/576 outside) but SCRAMBLES along the innermost/stick dim (dim=-1: max_abs_err 3.53, 60/64 outside) — an SDSC stick-layout bug. Stays validated:false because a blanket allowlist entry would wrongly delegate innermost-dim cats: RoPE rotate_half does cat([-x2,x1],dim=-1), which would silently miscompile. Used deliberately IN-CONTEXT: the 8b cat-based KV cache (seq-dim concat) is device-safe; RoPE authoring must AVOID the innermost cat (8b). Upstream issue-draft candidate (stick-dim concat)."
+  - name: "aten::constant_pad_nd"
+    validated: false
+
+  # --- dtype ---
+  - name: "aten::_to_copy"
+    validated: false
+    note: "8a follow-up (LD_LIBRARY_PATH-fixed re-probe): compiles(1 kernel), runs=PASS, matches=FAIL — the on-device fp16->fp32 cast produces garbage (max_abs_err 4.13, 53/64 outside envelope), a real SDSC numeric bug not a masked note. Off the critical path: the decoder layer avoids _to_copy entirely by keeping every constant fp16 (see RMSNormMath eps-as-fp16-buffer authoring rule in test_partitioner.py), so to_edge inserts no _to_dim_order_copy cast. Left off allowlist; upstream numeric bug is an 8b issue-draft candidate."
+
+  # --- masking ---
+  - name: "aten::where"
+    validated: true
+    since_phase: 7
+    note: "mixed-dtype bool bridge (Phase 7)"
+
+  # --- attention ---
+  - name: "aten::_softmax"
+    validated: true
+    since_phase: 8
+    note: "8a device sweep: runs+matches within fp16 envelope"
+  - name: "aten::scaled_dot_product_attention"
+    validated: true
+    since_phase: 9
+    note: "preserved through to_edge via preserve_ops (not decomposed by ExecuTorch). SpyreBackend._retarget_edge_to_aten unwraps EdgeOpOverload; compile_fx CIA dispatch on spyre device routes to _scaled_dot_product_fused_attention_overrideable, handled by spyre__sdpa_overrideable (decompositions.py) in tiled fp16 — eliminates the previous fp32 permute_copy / ReStickifyOpHBM(IEEE_FP32). NOTE: softmax-fed context bmm (probs@v) inside the decomp still CPU-falls-back via the _consumes_softmax guard; only the outer SDPA node is delegated."
+
+  # --- embedding / kv-cache ---
+  - name: "aten::embedding"
+    validated: false
+    note: "compile FAIL: no SDSC kernel (int64 gather). CPU-fallback at input edge (8b)."
+  - name: "aten::index_copy"
+    validated: false
+    note: "compile FAIL: dxp_standalone SIGABRT. Use cat-based KV cache instead (8b). Only reaches the edge graph via preserve_ops; by default to_edge decomposes index_copy into aten::index_put (issue 36 Phase A)."
+  - name: "aten::index_put"
+    validated: true
+    since_phase: 10
+    note: "to_edge lowering of index_copy (both spellings). torch-spyre indirect scatter kernel (test_indirect_access_scatter.py). Validated: probe_kv_scatter PASS (slots 5,6,7 retention + CPU match)."

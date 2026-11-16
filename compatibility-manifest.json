@@ -1,0 +1,9 @@
+{
+  "executorch": "1.5.1",
+  "torch": "2.13.0",
+  "torch_spyre": "0.5.0-rc.3",
+  "python": "3.12",
+  "sdk_version": "2.0",
+  "hardware": "IBM Spyre — Spyre dev cluster",
+  "notes": "ExecuTorch v1.5.1 does not declare a torch pin, so torch==2.13.0 is pinned explicitly to match the SDK image's torch-spyre 2.13 build (torch-spyre 0.5.0 series). Install ET core-only (no requirements-examples.txt) to avoid pulling in incompatible transitive pins."
+}

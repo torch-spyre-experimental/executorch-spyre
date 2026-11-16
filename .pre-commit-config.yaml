@@ -1,0 +1,51 @@
+# Copyright 2026 The Torch-Spyre / ExecuTorch-Spyre Authors.
+# Licensed under the Apache License, Version 2.0.
+#
+# Pre-commit hooks for the Spyre ExecuTorch backend. Mirrors the tooling both
+# torch-spyre and pytorch/executorch expect (Google style for C++, black + ruff
+# for Python) so a PR to either target lands lint-clean. Run once with:
+#
+#     pip install pre-commit && pre-commit install
+#     pre-commit run --all-files
+#
+# NOTE: DCO sign-off (`git commit -s`) is enforced by the upstream CI DCO check,
+# not by a local hook — commits without a `Signed-off-by:` line will be rejected
+# at PR time. See CONTRIBUTING.md.
+
+# Every tracked file is a candidate; each hook narrows itself by file type (its
+# own `types`/`types_or`), so a new .yml/.md/.sh/CMake file is covered without
+# editing this filter. spyre2 is out of scope and hands-off, so it is excluded
+# here for all hooks.
+exclude: ^(executorch/backends/spyre2/|examples/spyre2_mm/|docs/spyre2-early-access\.md$)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: mixed-line-ending
+
+  # Python: black (format) + ruff (lint, incl. isort-style import order).
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+        # The hook default also covers jupyter; notebooks stay out of scope.
+        types_or: [python, pyi]
+
+  # C++: clang-format against the Google-based .clang-format in this dir.
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.6
+    hooks:
+      - id: clang-format
+        types_or: [c++, c]

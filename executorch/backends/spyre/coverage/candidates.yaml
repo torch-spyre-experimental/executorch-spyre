@@ -1,0 +1,211 @@
+# Spyre delegate — candidate op inventory (Phase 5).
+#
+# This is the WORK QUEUE the coverage harness (run_coverage.py) grinds through:
+# core-aten ops we WANT to delegate but have not yet confirmed on-device. When
+# an op passes the harness's device gate (compiles to SDSC + runs + matches the
+# CPU fp16 reference) it graduates to `validated: true` in supported_ops.yaml
+# and drops off this list.
+#
+# GROUND TRUTH — this file was rewritten 2026-07-25 from the actual torch-spyre
+# tables on the Spyre pod (/home/senuser/torch-spyre/torch_spyre/_inductor/) plus
+# the Granite model-op matrix (tests/configs/model_ops_tests/). `source` is now
+# verified provenance, not a placeholder:
+#
+#   spyre-lowering    aten key registered in _inductor/lowering.py
+#                     (mm _scaled_mm bmm mean clone full copy_ cat add mul sub
+#                      clamp/max/min maximum minimum constant_pad_nd)
+#   spyre-decomp      aten key in _inductor/decompositions.py (rewritten to
+#                     spyre customops or simpler aten: addmm linear rms_norm
+#                     layer_norm gelu silu softplus topk where neg sign floor
+#                     ceil prod max min amax amin argmax argmin bitwise_*
+#                     logical_* tril triu ones new_ones full_like convolution
+#                     _scaled_dot_product_fused_attention_overrideable)
+#   spyre-customops   native spyre:: custom op exists in _inductor/customops.py
+#                     (rms_norm layer_norm layernormscale layernormnorm exx2
+#                      softplus gelu silu clamp topkvalue topkindex)
+#   spyre-pointwise   NOT spyre-specific — torch-spyre unregisters the eager
+#                     fallback so Inductor's DEFAULT pointwise lowering applies
+#                     (pow rsqrt sin cos div sigmoid exp reciprocal sqrt ...)
+#   spyre-view        structural view op via Inductor's default view lowering
+#   spyre-dtypeops    prims.convert_element_type table in _inductor/dtype_ops.py
+#                     — pairs among {fp16,bf16,fp32,bool,fp8} ONLY; NO int64
+#   model-ops         appears in the Granite model-op matrix
+#                     (tests/configs/model_ops_tests/granite-3.3-8b-instruct.yaml)
+#   granite-layer     required by a Granite/Llama decoder layer (Phase 8)
+#
+# `group` mirrors the Phase 8 dependency order. RISK entries (embedding,
+# index_copy_, int64 _to_copy) are ops the Granite matrix needs but that appear
+# in NO spyre table — the harness must confirm/deny them on-device; per the
+# "fail loudly, never miscompile" contract they stay `validated: false` until it
+# does, and a hard compile fail is the expected, correct signal there.
+
+candidates:
+  # --- matmul family -------------------------------------------------------
+  - name: "aten::mm"
+    group: matmul
+    source: spyre-lowering
+    note: "linear/projection GEMM; VALIDATED Phase 2/3"
+  - name: "aten::addmm"
+    group: matmul
+    source: spyre-decomp
+    note: "linear w/ bias -> decomposes to mm/linear; VALIDATED Phase 3"
+  - name: "aten::bmm"
+    group: matmul
+    source: spyre-lowering
+    note: "batched matmul (spyre.batched_matmul); attention scores/context"
+  - name: "aten::matmul"
+    group: matmul
+    source: model-ops
+    note: "granite-3.3 x1; decomposes to mm/bmm"
+
+  # --- elementwise (spyre lowering) ---------------------------------------
+  - name: "aten::add"
+    group: elementwise
+    source: spyre-lowering
+    note: "residual adds; granite-3.3 x4"
+  - name: "aten::sub"
+    group: elementwise
+    source: spyre-lowering
+  - name: "aten::mul"
+    group: elementwise
+    source: spyre-lowering
+    note: "gating, RoPE, scaling; granite-3.3 x8 (top op)"
+
+  # --- pointwise (Inductor DEFAULT lowering; fallback unregistered) --------
+  - name: "aten::div"
+    group: pointwise
+    source: spyre-pointwise
+    note: "truediv in granite-3.3 x1 (attention scale)"
+  - name: "aten::neg"
+    group: pointwise
+    source: spyre-decomp
+    note: "RoPE rotate_half; granite-3.3 x2"
+  - name: "aten::pow"
+    group: pointwise
+    source: spyre-pointwise
+    note: "RMSNorm x^2 (decomp path); granite-3.3 x1"
+  - name: "aten::rsqrt"
+    group: pointwise
+    source: spyre-pointwise
+    note: "RMSNorm 1/sqrt(var+eps); granite-3.3 x1"
+  - name: "aten::cos"
+    group: rope
+    source: spyre-pointwise
+    note: "RoPE; granite-3.3 x1"
+  - name: "aten::sin"
+    group: rope
+    source: spyre-pointwise
+    note: "RoPE; granite-3.3 x1"
+
+  # --- reduction / normalization ------------------------------------------
+  - name: "aten::mean"
+    group: reduction
+    source: spyre-lowering
+    note: "RMSNorm variance path (mean.dim/.default); granite-3.3 x1"
+  # RMSNorm: prefer the native fused spyre::rms_norm customop over the
+  # pow/mean/add/rsqrt/mul decomposition. decompositions.py maps aten.rms_norm
+  # -> spyre.layernormnorm.
+  - name: "aten::rms_norm"
+    group: norm
+    source: spyre-customops
+    note: "native spyre::rms_norm; else pow/mean/rsqrt/mul decomposition"
+  - name: "aten::native_layer_norm"
+    group: norm
+    source: spyre-customops
+    note: "native spyre::layer_norm (layernormscale/layernormnorm)"
+
+  # --- activations ---------------------------------------------------------
+  - name: "aten::silu"
+    group: activation
+    source: spyre-customops
+    note: "native spyre::silu; SiLU-gated MLP"
+  - name: "aten::gelu"
+    group: activation
+    source: spyre-customops
+    note: "native spyre::gelu"
+  - name: "aten::sigmoid"
+    group: activation
+    source: spyre-pointwise
+    note: "Inductor default pointwise (silu=x*sigmoid is native, standalone is not)"
+
+  # --- view-family (edge-dialect *_copy variants; structural) --------------
+  - name: "aten::view_copy"
+    group: view
+    source: spyre-view
+    note: "granite reshape x2"
+  - name: "aten::expand_copy"
+    group: view
+    source: spyre-view
+    note: "GQA kv-head expand (SDPA decomp uses expand)"
+  - name: "aten::slice_copy"
+    group: view
+    source: spyre-view
+  - name: "aten::select_copy"
+    group: view
+    source: spyre-view
+  - name: "aten::transpose_copy"
+    group: view
+    source: model-ops
+    note: "granite-3.3 x4"
+  - name: "aten::unsqueeze_copy"
+    group: view
+    source: model-ops
+    note: "granite-3.3 x1"
+  - name: "aten::_reshape_alias_copy"
+    group: view
+    source: spyre-view
+
+  # --- shape / concat ------------------------------------------------------
+  - name: "aten::cat"
+    group: shape
+    source: spyre-lowering
+    note: "KV-cache concat / RoPE half-concat; granite-3.3 x3"
+  - name: "aten::clone"
+    group: shape
+    source: spyre-lowering
+  - name: "aten::full"
+    group: shape
+    source: spyre-lowering
+    note: "mask/const fill (spyre.constant/empty backed)"
+
+  # --- dtype / masking -----------------------------------------------------
+  - name: "aten::_to_copy"
+    group: dtype
+    source: spyre-dtypeops
+    note: "convert_element_type; fp16/bf16/fp32/bool/fp8 ONLY. int64 token-id cast NOT in table -> RISK; Phase 7 must keep int64 as index dtype, not route it here."
+  - name: "aten::where"
+    group: masking
+    source: spyre-decomp
+    note: "attention mask select; bool predicate (Phase 7 mixed-dtype)"
+  - name: "aten::clamp"
+    group: masking
+    source: spyre-lowering
+    note: "native spyre.clamp (+clamp_min/clamp_max)"
+
+  # --- attention -----------------------------------------------------------
+  - name: "aten::_softmax"
+    group: attention
+    source: spyre-pointwise
+    note: "no spyre-specific softmax; Inductor default decomp (max/exp/sum/div)"
+  - name: "aten::scaled_dot_product_attention"
+    group: attention
+    source: spyre-decomp
+    note: "lowers via aten._scaled_dot_product_fused_attention_overrideable decomp; else bmm->scale->_softmax->bmm"
+
+  # --- embedding / token path ---------------------------------------------
+  # RISK: embedding appears in NO spyre table (not lowering/decomp/customops).
+  # Likely eager-only. The harness must prove whether SDSC lowers it; expect a
+  # hard compile fail until proven, and treat CPU fallback as the honest outcome.
+  - name: "aten::embedding"
+    group: embedding
+    source: granite-layer
+    note: "RISK: not in any spyre table; token-id->hidden lookup, int64 indices"
+
+  # --- KV-cache in-place update -------------------------------------------
+  # RISK: index_copy_ is in the granite-3.3 matrix (x1) but in NO spyre lowering
+  # table. In-place index write for the KV cache — may need CPU fallback or a
+  # rewrite to cat-based cache. Harness confirms.
+  - name: "aten::index_copy"
+    group: kvcache
+    source: model-ops
+    note: "RISK: granite-3.3 KV-cache update; not in spyre tables"

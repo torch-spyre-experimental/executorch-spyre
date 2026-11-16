@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv*/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# C++ / CMake
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Artifacts
+*.pte
+artifacts-*/

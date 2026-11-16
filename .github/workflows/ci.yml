@@ -1,0 +1,190 @@
+# Copyright 2026 The ExecuTorch-Spyre Authors.
+# Licensed under the Apache License, Version 2.0.
+#
+# Host CI — runs on every push to main, every pull request, and nightly.
+# Requires no Spyre device: physical-device tests live in separate test_spyre
+# directories and are never collected by this workflow.
+#
+# The same file runs on GitHub-hosted runners and on a self-hosted runner:
+#   * repository variable CI_RUNS_ON — JSON runner labels, e.g.
+#       ["self-hosted","executorch-spyre-host"]   (unset => "ubuntu-latest")
+#   * repository variable CI_PYTHON  — Python 3.12 on a self-hosted runner,
+#       e.g. /opt/homebrew/bin/python3.12       (unset => actions/setup-python)
+# On a self-hosted runner, pull requests from forks are not run.
+#
+# Versions come from compatibility-manifest.json, not from this file.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 18 * * *" # nightly, catches drift in unpinned transitive deps
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  python-tests:
+    name: Python host tests (spyre + spyre2)
+    if: ${{ !vars.CI_RUNS_ON || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      # Expected counts; update together with the tests they describe.
+      SPYRE_MIN_PASSED: 221
+      SPYRE_MAX_SKIPPED: 0
+      SPYRE2_MIN_PASSED: 19
+      SPYRE2_MAX_SKIPPED: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        if: ${{ !vars.CI_PYTHON }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create venv
+        run: |
+          "${{ vars.CI_PYTHON || 'python' }}" -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          TORCH=$(python -c "import json; print(json.load(open('compatibility-manifest.json'))['torch'])")
+          ET=$(python -c "import json; print(json.load(open('compatibility-manifest.json'))['executorch'])")
+          if [ "$RUNNER_OS" = Linux ]; then
+            # The PyPI Linux wheel bundles CUDA (several GB); the device pod uses +cpu.
+            pip install --index-url https://download.pytorch.org/whl/cpu "torch==$TORCH"
+          fi
+          # Install ET core-only — skip requirements-examples.txt to hold the torch pin.
+          pip install "executorch==$ET" "torch==$TORCH" pytest
+          python -c "import torch, executorch; print('torch', torch.__version__)"
+
+      - name: Install executorch-spyre (editable)
+        run: |
+          # --no-deps: the pins above are already installed (and CPU-only torch).
+          pip install --no-deps -e .
+          executorch-spyre-export --help > /dev/null
+
+      - name: Run hermetic runtime-build script tests
+        run: |
+          bash scripts/tests/test_build_device_runtime.sh
+          bash scripts/tests/test_spyre_env.sh
+          bash scripts/tests/test_spyre_cmake_stack.sh
+
+      - name: Run spyre host tests
+        env:
+          # Host CI has no torch-spyre, and fallbacklist mode (the production
+          # default) fails closed without its fallback_ops. Pin the conservative
+          # allowlist mode so the run is deterministic; the suite's conftest pins
+          # it too, and test_partition_modes.py covers fallbacklist with a stub.
+          EXECUTORCH_SPYRE_PARTITION_MODE: allowlist
+        run: |
+          python -m pytest -p no:cacheprovider executorch/backends/spyre/test/ -m host -v \
+            --junitxml="$RUNNER_TEMP/junit-spyre.xml"
+          python .github/scripts/check_junit.py "$RUNNER_TEMP/junit-spyre.xml" --label spyre \
+            --min-passed "$SPYRE_MIN_PASSED" --max-skipped "$SPYRE_MAX_SKIPPED"
+
+      - name: Run spyre2 host tests
+        run: |
+          python -m pytest -p no:cacheprovider executorch/backends/spyre2/test/ -m host -v \
+            --junitxml="$RUNNER_TEMP/junit-spyre2.xml"
+          python .github/scripts/check_junit.py "$RUNNER_TEMP/junit-spyre2.xml" --label spyre2 \
+            --min-passed "$SPYRE2_MIN_PASSED" --max-skipped "$SPYRE2_MAX_SKIPPED"
+
+      - name: Upload test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-python
+          path: ${{ runner.temp }}/junit-*.xml
+          if-no-files-found: ignore
+
+  cpp-tests:
+    name: C++ payload parser unit tests
+    if: ${{ !vars.CI_RUNS_ON || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    env:
+      GTEST_MIN_PASSED: 24
+
+    steps:
+      # The host-only test build needs gtest + nlohmann-json only, not the
+      # third_party submodules.
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew list cmake googletest nlohmann-json >/dev/null 2>&1 \
+              || brew install cmake googletest nlohmann-json
+          else
+            sudo apt-get update -q
+            sudo apt-get install -y cmake libgtest-dev nlohmann-json3-dev
+          fi
+
+      - name: Configure (host-only, no Spyre stack)
+        run: |
+          INC=/usr/include
+          [ "$RUNNER_OS" = macOS ] && INC="$(brew --prefix)/include"
+          cmake -S . -B "$RUNNER_TEMP/spyre-build" \
+            -DEXECUTORCH_BUILD_SPYRE=OFF \
+            -DEXECUTORCH_BUILD_SPYRE_TESTS=ON \
+            -DNLOHMANN_JSON_INCLUDE_DIR="$INC"
+
+      - name: Build
+        run: cmake --build "$RUNNER_TEMP/spyre-build" --parallel
+
+      - name: Run gtest
+        run: |
+          ctest --test-dir "$RUNNER_TEMP/spyre-build" --output-on-failure \
+            --output-junit "$RUNNER_TEMP/junit-gtest.xml"
+          python3 .github/scripts/check_junit.py "$RUNNER_TEMP/junit-gtest.xml" --label gtest \
+            --min-passed "$GTEST_MIN_PASSED"
+
+      - name: Upload test report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-gtest
+          path: ${{ runner.temp }}/junit-gtest.xml
+          if-no-files-found: ignore
+
+  lint:
+    name: Lint (pre-commit, advisory)
+    if: ${{ !vars.CI_RUNS_ON || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    # Advisory until the tree has been reformatted once: `pre-commit run
+    # --all-files` currently rewrites ~30 files and reports 3 ruff F841 errors.
+    # Remove continue-on-error in the commit that lands that reformat.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        if: ${{ !vars.CI_PYTHON }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run pre-commit
+        run: |
+          "${{ vars.CI_PYTHON || 'python' }}" -m venv "$RUNNER_TEMP/lint-venv"
+          "$RUNNER_TEMP/lint-venv/bin/pip" install -q pre-commit
+          "$RUNNER_TEMP/lint-venv/bin/pre-commit" run --all-files --show-diff-on-failure
