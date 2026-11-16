@@ -1,0 +1,55 @@
+// TTIR for spyre2 mm_fp16 (M=64 K=64 N=64, fp16)
+// HAND-AUTHORED PLACEHOLDER — the triton wheel does not install on this macOS
+// host, so this fixture is a faithful transcription of the tt-dialect module
+// that backends.spyre2.kernels.mm_fp16._mm_fp16_kernel compiles to (grid (1,),
+// arange-based loads, one dot, one store). Regenerate the real artifact on a
+// Linux/pod venv with:  python -m backends.spyre2.ttir_capture --out backends/spyre2/fixtures/ttir/mm_fp16_64.ttir
+// The Stage-1 lowering (ttir_to_ktir) is driven by the op *grammar* — exactly one
+// dot, two operand loads (A, B), one output store (C) — not by SSA names or the
+// exact triton textual format, so this placeholder exercises the same path.
+// Frontend (AST->TTIR) is target-independent: no GPU / Spyre backend needed.
+module {
+  tt.func public @_mm_fp16_kernel(%A: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %B: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %C: !tt.ptr<f16> {tt.divisibility = 16 : i32}) attributes {noinline = false} {
+    // offs_m / offs_n / offs_k = tl.arange(0, 64)
+    %offs = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+
+    // a_ptrs = A + offs_m[:, None]*stride_am + offs_k[None, :]*stride_ak
+    %om = tt.expand_dims %offs {axis = 1 : i32} : tensor<64xi32> -> tensor<64x1xi32>
+    %ok = tt.expand_dims %offs {axis = 0 : i32} : tensor<64xi32> -> tensor<1x64xi32>
+    %c_am = arith.constant dense<64> : tensor<64x1xi32>
+    %om_s = arith.muli %om, %c_am : tensor<64x1xi32>
+    %om_b = tt.broadcast %om_s : tensor<64x1xi32> -> tensor<64x64xi32>
+    %ok_b = tt.broadcast %ok : tensor<1x64xi32> -> tensor<64x64xi32>
+    %a_off = arith.addi %om_b, %ok_b : tensor<64x64xi32>
+    %a_base = tt.splat %A : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
+    %a_ptrs = tt.addptr %a_base, %a_off : tensor<64x64x!tt.ptr<f16>>, tensor<64x64xi32>
+
+    // b_ptrs = B + offs_k[:, None]*stride_bk + offs_n[None, :]*stride_bn
+    %bk = tt.expand_dims %offs {axis = 1 : i32} : tensor<64xi32> -> tensor<64x1xi32>
+    %bn = tt.expand_dims %offs {axis = 0 : i32} : tensor<64xi32> -> tensor<1x64xi32>
+    %c_bk = arith.constant dense<64> : tensor<64x1xi32>
+    %bk_s = arith.muli %bk, %c_bk : tensor<64x1xi32>
+    %bk_b = tt.broadcast %bk_s : tensor<64x1xi32> -> tensor<64x64xi32>
+    %bn_b = tt.broadcast %bn : tensor<1x64xi32> -> tensor<64x64xi32>
+    %b_off = arith.addi %bk_b, %bn_b : tensor<64x64xi32>
+    %b_base = tt.splat %B : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
+    %b_ptrs = tt.addptr %b_base, %b_off : tensor<64x64x!tt.ptr<f16>>, tensor<64x64xi32>
+
+    // a = tl.load(a_ptrs); b = tl.load(b_ptrs)
+    %a = tt.load %a_ptrs : tensor<64x64x!tt.ptr<f16>>
+    %b = tt.load %b_ptrs : tensor<64x64x!tt.ptr<f16>>
+
+    // acc = tl.dot(a, b, out_dtype=fp32)
+    %zero = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
+    %acc = tt.dot %a, %b, %zero, inputPrecision = tf32 : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>
+
+    // tl.store(c_ptrs, acc.to(fp16))
+    %acc_f16 = arith.truncf %acc : tensor<64x64xf32> to tensor<64x64xf16>
+    %c_off = arith.addi %om_b, %ok_b : tensor<64x64xi32>
+    %c_base = tt.splat %C : !tt.ptr<f16> -> tensor<64x64x!tt.ptr<f16>>
+    %c_ptrs = tt.addptr %c_base, %c_off : tensor<64x64x!tt.ptr<f16>>, tensor<64x64xi32>
+    tt.store %c_ptrs, %acc_f16 : tensor<64x64x!tt.ptr<f16>>
+
+    tt.return
+  }
+}

@@ -1,0 +1,6 @@
+[submodule "third_party/executorch"]
+	path = third_party/executorch
+	url = https://github.com/pytorch/executorch.git
+[submodule "third_party/torch-spyre"]
+	path = third_party/torch-spyre
+	url = https://github.com/torch-spyre/torch-spyre.git

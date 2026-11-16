@@ -1,0 +1,14 @@
+# Copyright 2026 The Torch-Spyre / ExecuTorch-Spyre Authors.
+# Licensed under the Apache License, Version 2.0.
+#
+# The Spyre backend C++ (runtime/*.cpp, runtime/*.h, test/*.cpp) follows Google
+# C++ style, matching both ExecuTorch's and torch-spyre's house style. This is
+# the same base ExecuTorch uses; kept here so a standalone `clang-format` /
+# pre-commit run in this tree does not depend on the upstream .clang-format.
+---
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++20
+ColumnLimit: 80
+DerivePointerAlignment: false
+PointerAlignment: Left
