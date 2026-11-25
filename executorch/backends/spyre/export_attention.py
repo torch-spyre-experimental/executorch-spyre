@@ -129,7 +129,7 @@ class AttentionBlock(torch.nn.Module):
 
     def forward(self, x, cos, sin, mask):
         b, s, _ = x.shape
-        hq, hkv, d = self.n_heads, self.n_kv_heads, self.head_dim
+        hq, hkv = self.n_heads, self.n_kv_heads
         rep = hq // hkv
         if b != 1:
             raise ValueError(f"AttentionBlock is B=1 only (2D-mm path), got B={b}")

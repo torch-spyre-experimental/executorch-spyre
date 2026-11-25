@@ -324,7 +324,7 @@ def _iterate_input_layouts(
             # verified: it must go back to the default upload, which is what the
             # runtime will feed when no device_layout is recorded.
             unverified = [i for i in seeded if i not in targets]
-            history.append({i: _layout_key(l) for i, l in targets.items()})
+            history.append({i: _layout_key(lay) for i, lay in targets.items()})
 
             if iteration == 1:
                 pass1_mismatched = set(mismatched)

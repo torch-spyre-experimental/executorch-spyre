@@ -97,7 +97,6 @@ def _minimal_load(text: str) -> dict:
     """Strict parser for the constrained schema (see module docstring)."""
     result: dict[str, Any] = {}
     current_list: list | None = None
-    current_list_key: str | None = None
     current_item: dict | None = None
     list_indent: int | None = None
 
@@ -138,11 +137,9 @@ def _minimal_load(text: str) -> dict:
         if value == "":
             # Opens a nested block -- we only support list-of-mappings blocks.
             current_list = []
-            current_list_key = key
             result[key] = current_list
         else:
             current_list = None
-            current_list_key = None
             result[key] = _scalar(value)
 
     return result
