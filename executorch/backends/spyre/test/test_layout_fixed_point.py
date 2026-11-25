@@ -29,7 +29,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("executorch")
 
-import executorch.backends.spyre.spyre_backend as ab
+import executorch.backends.spyre.spyre_backend as ab  # noqa: E402
 
 KV_SHAPE = [1, 8, 512, 128]
 

@@ -74,7 +74,6 @@ from torch.fx.passes.operator_support import OperatorSupportBase
 
 from .spyre_backend import SPYRE_BACKEND_ID
 from .spyre_block_partition import (
-    GRANULARITY_BLOCK,
     PartitionGroup,
     build_partition_report,
     discover_block_container,

@@ -544,9 +544,9 @@ def main():
         if args.qk_scale != 1.0:
             with torch.no_grad():
                 raw.model.embed_tokens.weight.mul_(args.qk_scale)
-                for l in raw.model.layers:
-                    l.self_attn.q_proj.weight.mul_(args.qk_scale)
-                    l.self_attn.k_proj.weight.mul_(args.qk_scale)
+                for layer in raw.model.layers:
+                    layer.self_attn.q_proj.weight.mul_(args.qk_scale)
+                    layer.self_attn.k_proj.weight.mul_(args.qk_scale)
         raw.save_pretrained(ckpt)
     if args.ckpt:
         # Real checkpoint: every dimension comes from ITS config, not the synthetic-CLI defaults.

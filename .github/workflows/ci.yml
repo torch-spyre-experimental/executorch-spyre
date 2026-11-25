@@ -42,8 +42,10 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
       # Expected counts; update together with the tests they describe.
-      SPYRE_MIN_PASSED: 221
-      SPYRE_MAX_SKIPPED: 0
+      SPYRE_MIN_PASSED: 387
+      # Skips on host CI: test_export_hf_checkpoint (transformers not installed)
+      # and test_kv_cache_export's real-compiler test (no torch_spyre).
+      SPYRE_MAX_SKIPPED: 2
       SPYRE2_MIN_PASSED: 19
       SPYRE2_MAX_SKIPPED: 1
 
@@ -100,6 +102,10 @@ jobs:
             --min-passed "$SPYRE_MIN_PASSED" --max-skipped "$SPYRE_MAX_SKIPPED"
 
       - name: Run spyre2 host tests
+        env:
+          # spyre2 reuses the spyre partitioner; its conftest does not pin the
+          # mode, and fallbacklist (the default) fails closed without torch-spyre.
+          EXECUTORCH_SPYRE_PARTITION_MODE: allowlist
         run: |
           python -m pytest -p no:cacheprovider executorch/backends/spyre2/test/ -m host -v \
             --junitxml="$RUNNER_TEMP/junit-spyre2.xml"
@@ -165,14 +171,10 @@ jobs:
           if-no-files-found: ignore
 
   lint:
-    name: Lint (pre-commit, advisory)
+    name: Lint (pre-commit)
     if: ${{ !vars.CI_RUNS_ON || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 15
-    # Advisory until the tree has been reformatted once: `pre-commit run
-    # --all-files` currently rewrites ~30 files and reports 3 ruff F841 errors.
-    # Remove continue-on-error in the commit that lands that reformat.
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4

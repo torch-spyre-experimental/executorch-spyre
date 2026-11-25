@@ -16,4 +16,4 @@ try:
 except ImportError:
     pass
 
-from .preflight import require_physical_spyre as require_physical_spyre
+from .preflight import require_physical_spyre as require_physical_spyre  # noqa: E402
